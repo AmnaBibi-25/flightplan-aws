@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: AWS SAM template for the flight plan application
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Email address to receive SNS alerts
+
+Resources:
+
+  # Maps to: the hand-built flightplan-state table
+  StateTable:
+    Type: 'AWS::DynamoDB::Table'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 5
+      AttributeDefinitions: 
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+
+  # Maps to: the hand-built flightplan-get-state Lambda function
+  StateFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Runtime: python3.14
+      Handler: lambda_function.lambda_handler
+      CodeUri: src/
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StateTable
+      Policies: 
+        - Statement:
+            - Effect: Allow
+              Action: 
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt StateTable.Arn
+      Events:
+        GetState:
+          Type: HttpApi
+          Properties:
+            Path: /state
+            Method: GET
+        PutState:
+          Type: HttpApi
+          Properties: 
+            Path: /state
+            Method: PUT
+
+  # Maps to: the hand-built /aws/lambda/flightplan-get-state Lambda function log group
+  StateFunctionLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${StateFunction}
+      RetentionInDays: 7
+
+  # Maps to: the hand-built Flightplan-Errors SNS topic
+  AlertTopic: 
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      Subscription: 
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  # Maps to: the hand-built Flightplan-Errors-Alarm CloudWatch alarm
+  ErrorAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref StateFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: 
+        - !Ref AlertTopic
+
+# Lambda IAM role (flightplan-lambda-role), HttpApi in ApiGateway (flightplan-api) and Lambda invoke permissions will be added by SAM itself
